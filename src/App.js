@@ -1,37 +1,52 @@
-import { Amplify, API } from "aws-amplify"; // ✅ `API` を `aws-amplify` から直接インポート
-import awsExports from "./aws-exports"; // AWSの設定
+import { Amplify, Auth, API } from "aws-amplify";  // ✅ `Auth` と `API` は `aws-amplify` から直接インポート
+import awsExports from "./aws-exports";
 import { Authenticator } from "@aws-amplify/ui-react";
-import { fetchAuthSession } from "aws-amplify/auth";  // ✅ トークン取得用
 
 Amplify.configure(awsExports);
 
-function App() {
-  const callApi = async () => {
-    try {
-      // ✅ 認証セッションを取得し、トークンを安全に取得
-      const session = await fetchAuthSession();
-      const token = session.tokens?.idToken?.toString() ?? "";  
+async function login() {
+  try {
+    await Auth.federatedSignIn();  // ✅ 修正: `loginWith` → `federatedSignIn`
+  } catch (error) {
+    console.error("Login failed:", error);
+  }
+}
 
-      const requestData = {
-        headers: { Authorization: `Bearer ${token}` },  // ✅ `Bearer` を追加
-        body: { name: "Test User" },  // ✅ 直接 JSON を渡す
-      };
+async function callApi() {
+  try {
+    const session = await Auth.currentSession();
+    const token = session.getIdToken().getJwtToken();
 
-      // ✅ `post` ではなく `API.post` を使用
-      const response = await API.post("myAPI", "/getUserData", requestData);
-      console.log("API Response:", response);
-    } catch (error) {
-      console.error("API Error:", error);
+    if (!token) {
+      console.error("No authentication token found.");
+      return;
     }
-  };
 
+    const requestData = {
+      headers: { Authorization: `Bearer ${token}` },
+      body: { name: "Test User" },
+    };
+
+    const response = await API.post("myAPI", "/getUserData", requestData);
+    console.log("API Response:", response);
+  } catch (error) {
+    console.error("API Error:", error);
+  }
+}
+
+export default function App() {
   return (
     <Authenticator>
       {({ signOut, user }) => (
         <div style={{ textAlign: "center", marginTop: "50px" }}>
-          <h1>Welcome, {user?.signInDetails?.username ?? "Guest"}</h1>  {/* ✅ `username` の取得方法を修正 */}
+          <h1>Welcome, {user?.username ?? "Guest"}</h1>
 
-          {/* APIを呼び出すボタン */}
+          {/* ログインボタン */}
+          <button onClick={login} style={{ margin: "10px", padding: "10px", backgroundColor: "green", color: "white", border: "none", borderRadius: "5px" }}>
+            Login
+          </button>
+
+          {/* API呼び出しボタン */}
           <button onClick={callApi} style={{ margin: "10px", padding: "10px", backgroundColor: "blue", color: "white", border: "none", borderRadius: "5px" }}>
             Call API
           </button>
@@ -45,5 +60,3 @@ function App() {
     </Authenticator>
   );
 }
-
-export default App;
