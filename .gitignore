@@ -41,3 +41,4 @@ yarn-error.log*
 next-env.d.ts
 
 src/aws-exports.js
+awscliv2.zip
