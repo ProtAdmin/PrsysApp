@@ -1,7 +1,8 @@
-import { Amplify } from "aws-amplify";
 import awsExports from "./aws-exports";
-import { fetchAuthSession, getCurrentUser, signInWithRedirect, signOut } from "aws-amplify/auth";
+import { Amplify } from "aws-amplify";
+import { getCurrentUser, signInWithRedirect, signOut } from "aws-amplify/auth";
 import { useState, useEffect } from "react";
+import { exchangeCodeForToken } from "./auth"; // ✅ `auth.js` から `id_token` 取得関数をインポート
 
 // 各ユーザーグループに応じた画面コンポーネント
 const AdminDashboard = () => <h2>管理者画面</h2>;
@@ -10,70 +11,98 @@ const UserDashboard = () => <h2>一般ユーザー画面</h2>;
 
 Amplify.configure({ ...awsExports, ssr: true });
 
-// ✅ Cognito Hosted UI へリダイレクト関数（App 関数の外に記述）
+// ✅ Cognito Hosted UI へリダイレクト
 async function redirectToCognito() {
   try {
-    await signInWithRedirect({
-      provider: "COGNITO", // 🔹 明示的に Cognito を指定
-    });
+    console.log("🔄 Redirecting to Cognito...");
+    await signInWithRedirect({ provider: "COGNITO" });
   } catch (error) {
-    console.error("Redirect to Cognito failed:", error);
+    console.error("❌ Redirect to Cognito failed:", error);
   }
 }
 
 export default function App() {
   const [userInfo, setUserInfo] = useState(null);
-  const [userGroups, setUserGroups] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function fetchUserInfo() {
-      try {
-        const session = await fetchAuthSession();
-        if (!session.tokens?.idToken) {
-          console.error("ID Token is missing. Redirecting to Cognito.");
-          return redirectToCognito();
-        }
+  // ✅ ユーザー情報取得
+  async function fetchUserInfo() {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get("code");
 
-        const idToken = session.tokens.idToken;
-        console.log("ID Token:", idToken);
+      let idTokenValue;
+      if (code) {
+        console.log("🔄 Exchanging code for token...");
+        idTokenValue = await exchangeCodeForToken(code);
+        if (!idTokenValue) throw new Error("❌ Failed to retrieve ID token");
 
-        const groups = idToken.payload["cognito:groups"] || [];
-        console.log("User Groups:", groups);
-
+        // URL から `code` を削除
+        window.history.replaceState({}, document.title, "/");
+      } else {
         const user = await getCurrentUser();
-        console.log("Current User:", user);
-
-        setUserInfo({ username: user.username, token: idToken });
-        setUserGroups(groups);
-      } catch (error) {
-        console.log("User not authenticated. Redirecting to Cognito.", error);
-        redirectToCognito();
+        idTokenValue = user.signInUserSession.idToken.jwtToken; // ✅ `id_token` 取得
       }
-    }
 
+      console.log("✅ ID Token:", idTokenValue);
+
+      // ✅ `cognito:groups` を取得
+      const userGroups = idTokenValue.payload["cognito:groups"] || [];
+      console.log("✅ User Groups:", userGroups);
+
+      setUserInfo({ username: user.username, token: idTokenValue, groups: userGroups });
+    } catch (error) {
+      console.error("❌ User not authenticated. Redirecting to Cognito.", error);
+      redirectToCognito();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ✅ `useEffect` で `fetchUserInfo()` を呼び出す
+  useEffect(() => {
     fetchUserInfo();
   }, []);
 
   function renderDashboard() {
-    if (userGroups.includes("Proto-Admin-Group")) {
+    console.log("🟡 Checking user groups for dashboard rendering:", userInfo?.groups);
+    if (userInfo?.groups?.includes("Proto-Admin-Group")) {
       return <AdminDashboard />;
-    } else if (userGroups.includes("Proto-Dev-Group")) {
+    } else if (userInfo?.groups?.includes("Proto-Dev-Group")) {
       return <DevDashboard />;
-    } else if (userGroups.includes("Proto-User-Group")) {
+    } else if (userInfo?.groups?.includes("Proto-User-Group")) {
       return <UserDashboard />;
     } else {
-      return <h2>アクセス権がありません</h2>;
+      return <h2>🚫 アクセス権がありません</h2>;
+    }
+  }
+
+  async function handleSignOut() {
+    try {
+      await signOut();
+      console.log("✅ User signed out successfully.");
+    } catch (error) {
+      console.error("❌ Sign out failed:", error);
     }
   }
 
   return (
     <div style={{ textAlign: "center", marginTop: "50px" }}>
-      <h1>ようこそ, {userInfo?.username ?? "ゲスト"} さん</h1>
-      {renderDashboard()}
+      {loading ? (
+        <h2>🔄 認証情報を確認中...</h2>
+      ) : (
+        <>
+          <h1>ようこそ, {userInfo?.username ?? "ゲスト"} さん</h1>
+          {renderDashboard()}
 
-      <button onClick={() => signOut()} style={{ margin: "10px", padding: "10px", backgroundColor: "red", color: "white", border: "none", borderRadius: "5px" }}>
-        サインアウト
-      </button>
+          <button
+            onClick={handleSignOut}
+            style={{ margin: "10px", padding: "10px", backgroundColor: "red", color: "white", border: "none", borderRadius: "5px" }}
+          >
+            サインアウト
+          </button>
+        </>
+      )}
     </div>
   );
 }
