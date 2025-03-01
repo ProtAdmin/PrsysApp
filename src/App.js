@@ -1,79 +1,118 @@
 import awsExports from "./aws-exports";
 import { Amplify } from "aws-amplify";
-import { getCurrentUser, signInWithRedirect, signOut } from "aws-amplify/auth";
+import { getCurrentUser, signOut } from "aws-amplify/auth";
 import { useState, useEffect } from "react";
-import { exchangeCodeForToken } from "./auth"; // ✅ `auth.js` から `id_token` 取得関数をインポート
 
-// 各ユーザーグループに応じた画面コンポーネント
+Amplify.configure({ ...awsExports, ssr: true });
+
 const AdminDashboard = () => <h2>管理者画面</h2>;
 const DevDashboard = () => <h2>開発者画面</h2>;
 const UserDashboard = () => <h2>一般ユーザー画面</h2>;
 
-Amplify.configure({ ...awsExports, ssr: true });
+// ✅ Cognito に手動リダイレクトする関数
+async function manualRedirectToCognito() {
+  const cognitoLoginUrl =
+    "https://ap-northeast-1h2ira36fy.auth.ap-northeast-1.amazoncognito.com/login"
+    + "?client_id=128mcrh4ftsd1onp7q9vomaolp"
+    + "&response_type=token"
+    + "&scope=openid+profile+email"
+    + "&redirect_uri=https://d1xj20n18wdq9y.cloudfront.net";
 
-// ✅ Cognito Hosted UI へリダイレクト
-async function redirectToCognito() {
+  console.log("🔄 Redirecting manually to Cognito:", cognitoLoginUrl);
+  window.location.href = cognitoLoginUrl;
+}
+
+// ✅ IDトークンを解析する関数
+function parseIdToken(idToken) {
   try {
-    console.log("🔄 Redirecting to Cognito...");
-    await signInWithRedirect({ provider: "COGNITO" });
+    const parts = idToken.split(".");
+    if (parts.length !== 3) {
+      throw new Error("Invalid ID Token format");
+    }
+    return JSON.parse(atob(parts[1])); // デコード
   } catch (error) {
-    console.error("❌ Redirect to Cognito failed:", error);
+    console.error("❌ Failed to parse ID Token:", error);
+    return null;
   }
 }
 
 export default function App() {
   const [userInfo, setUserInfo] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [redirecting, setRedirecting] = useState(false);  // ✅ 追加：リダイレクト中フラグ
 
-  // ✅ ユーザー情報取得
   async function fetchUserInfo() {
     try {
-      const urlParams = new URLSearchParams(window.location.search);
-      const code = urlParams.get("code");
+      console.log("🔍 Fetching user info...");
+      const hashParams = new URLSearchParams(window.location.hash.substring(1));
+      let idTokenValue = hashParams.get("id_token");
 
-      let idTokenValue;
-      if (code) {
-        console.log("🔄 Exchanging code for token...");
-        idTokenValue = await exchangeCodeForToken(code);
-        if (!idTokenValue) throw new Error("❌ Failed to retrieve ID token");
-
-        // URL から `code` を削除
+      if (idTokenValue) {
+        console.log("✅ ID Token from URL:", idTokenValue);
         window.history.replaceState({}, document.title, "/");
       } else {
-        const user = await getCurrentUser();
-        idTokenValue = user.signInUserSession.idToken.jwtToken; // ✅ `id_token` 取得
+        try {
+          console.log("🔍 Checking getCurrentUser()...");
+          const user = await getCurrentUser();
+          idTokenValue = user?.signInUserSession?.idToken?.jwtToken;
+          console.log("✅ ID Token from getCurrentUser():", idTokenValue);
+        } catch {
+          console.warn("⚠️ No authenticated user found. Redirecting to Cognito...");
+          setRedirecting(true); // ✅ 追加: リダイレクト中フラグを設定
+          manualRedirectToCognito();
+          return;
+        }
       }
 
-      console.log("✅ ID Token:", idTokenValue);
+      if (!idTokenValue) {
+        console.warn("❌ No ID Token found. Redirecting to Cognito...");
+        setRedirecting(true);
+        manualRedirectToCognito();
+        return;
+      }
 
-      // ✅ `cognito:groups` を取得
-      const userGroups = idTokenValue.payload["cognito:groups"] || [];
-      console.log("✅ User Groups:", userGroups);
+      const payload = parseIdToken(idTokenValue);
+      if (!payload) throw new Error("❌ Failed to parse ID token payload");
 
-      setUserInfo({ username: user.username, token: idTokenValue, groups: userGroups });
+      console.log("✅ User Token Payload:", payload);
+
+      const groups = payload["cognito:groups"] || [];
+      console.log("✅ User Groups:", groups);
+
+      setUserInfo({
+        username: payload["cognito:username"],
+        groups: groups,
+      });
     } catch (error) {
-      console.error("❌ User not authenticated. Redirecting to Cognito.", error);
-      redirectToCognito();
+      console.error("❌ Error fetching user:", error);
+      setRedirecting(true);
+      manualRedirectToCognito();
     } finally {
       setLoading(false);
     }
   }
 
-  // ✅ `useEffect` で `fetchUserInfo()` を呼び出す
   useEffect(() => {
     fetchUserInfo();
   }, []);
 
   function renderDashboard() {
     console.log("🟡 Checking user groups for dashboard rendering:", userInfo?.groups);
-    if (userInfo?.groups?.includes("Proto-Admin-Group")) {
+    
+    if (!userInfo) {
+      console.log("🚫 userInfo is null");
+      return null; // ✅ 変更：「アクセス権がありません」を表示しない
+    }
+
+    if (userInfo.groups.includes("Proto-Admin-Group")) {
       return <AdminDashboard />;
-    } else if (userInfo?.groups?.includes("Proto-Dev-Group")) {
+    } else if (userInfo.groups.includes("Proto-Dev-Group")) {
       return <DevDashboard />;
-    } else if (userInfo?.groups?.includes("Proto-User-Group")) {
+    } else if (userInfo.groups.includes("Proto-User-Group")) {
       return <UserDashboard />;
     } else {
-      return <h2>🚫 アクセス権がありません</h2>;
+      console.log("🚫 No matching groups found:", userInfo.groups);
+      return null;
     }
   }
 
@@ -81,6 +120,7 @@ export default function App() {
     try {
       await signOut();
       console.log("✅ User signed out successfully.");
+      window.location.href = "/";
     } catch (error) {
       console.error("❌ Sign out failed:", error);
     }
@@ -88,21 +128,27 @@ export default function App() {
 
   return (
     <div style={{ textAlign: "center", marginTop: "50px" }}>
-      {loading ? (
-        <h2>🔄 認証情報を確認中...</h2>
-      ) : (
+      {loading || redirecting ? (  // ✅ 変更：リダイレクト中は何も表示しない
+        <h2>🔄 読み込み中...</h2>
+      ) : userInfo ? (
         <>
-          <h1>ようこそ, {userInfo?.username ?? "ゲスト"} さん</h1>
+          <h1>ようこそ, {userInfo.username} さん</h1>
           {renderDashboard()}
-
           <button
             onClick={handleSignOut}
-            style={{ margin: "10px", padding: "10px", backgroundColor: "red", color: "white", border: "none", borderRadius: "5px" }}
+            style={{
+              margin: "10px",
+              padding: "10px",
+              backgroundColor: "red",
+              color: "white",
+              border: "none",
+              borderRadius: "5px",
+            }}
           >
             サインアウト
           </button>
         </>
-      )}
+      ) : null}
     </div>
   );
 }
